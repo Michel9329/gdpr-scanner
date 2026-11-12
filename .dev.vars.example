@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local `wrangler dev`. Do not commit .dev.vars.
+# Required: without SCANNER_SECRET (at least 32 characters) the /scan endpoint answers 503 and does not run.
+# Generate a long random value, for example: openssl rand -hex 32
+SCANNER_SECRET=

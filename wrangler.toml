@@ -1,0 +1,33 @@
+name = "gdpr-scanner"
+main = "src/index.ts"
+compatibility_date = "2026-06-20"
+compatibility_flags = ["nodejs_compat"]
+
+# Optional: serve on your own domain. Without this the Worker answers on <name>.<your-subdomain>.workers.dev.
+# Note: if you add `routes`, keep `workers_dev = true` unless you want to disable the workers.dev URL.
+# workers_dev = true
+# routes = [
+#   { pattern = "scanner.example.com", custom_domain = true }
+# ]
+
+# Browser Rendering: headless Chromium used for the scan.
+[browser]
+binding = "BROWSER"
+
+# KV namespace: per-domain result cache (6 h TTL) and daily scan counter.
+# Create it with `wrangler kv namespace create SCAN_KV`, then paste the id here.
+# Required: without it /scan answers 503, because the daily cap would not exist.
+[[kv_namespaces]]
+binding = "SCAN_KV"
+id = "<your-kv-namespace-id>"
+
+[observability]
+enabled = true
+
+# Secrets (never commit these). Set with `wrangler secret put <NAME>`:
+#   SCANNER_SECRET  required, at least 32 characters. /scan requires the header `Authorization: Bearer <SCANNER_SECRET>`; without it /scan answers 503.
+# Plain variables (uncomment to use):
+# [vars]
+# SCANNER_UA_SUFFIX = "my-scanner/1.0 (+https://example.com/about)"   # appended to the User-Agent
+# DAILY_CAP = "25"                                                     # max scans per UTC day (counter lives in SCAN_KV)
+# DEBUG = "1"                                                          # allows the x-debug request header

@@ -6,7 +6,8 @@ A Cloudflare Worker that opens a website in a headless browser and reports what 
 visitor has consented to anything. Built with Claude Code, designed and reviewed by Michel Dimitri.
 
 It exists because the manual version of this check (open DevTools, clear cookies, read the network
-tab) is slow and easy to get wrong across many sites.
+tab) is slow and easy to get wrong across many sites. It runs in production behind the privacy check
+of the free site audit at [sharkcodestudio.com](https://sharkcodestudio.com/en/strumenti/audit).
 
 **This is not legal advice.** The output is a technical observation about one page load. It does not
 decide whether a site complies with the GDPR, the ePrivacy rules or any national law. Have a qualified

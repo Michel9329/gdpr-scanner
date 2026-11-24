@@ -49,7 +49,7 @@ export const TRACKER_HOSTS: TrackerHost[] = [
   { match: 'adservice.google.*', name: 'Google Ads', category: 'advertising' },
 
   // --- Meta / Facebook ---
-  { match: 'connect.facebook.net', name: 'Meta (Pixel or SDK)', category: 'advertising' },
+  { match: 'connect.facebook.net', name: 'Meta (Pixel/SDK)', category: 'advertising' },
   { match: 'facebook.com/tr', name: 'Meta Pixel', category: 'advertising' },
 
   // --- Microsoft ---

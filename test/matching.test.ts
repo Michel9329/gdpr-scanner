@@ -79,7 +79,7 @@ describe('classifyTrackerUrl: real trackers', () => {
     ['https://www.googletagmanager.com/gtm.js?id=GTM-XXXX', 'Google Tag Manager'],
     ['https://www.facebook.com/tr/?id=1&ev=PageView', 'Meta Pixel'],
     ['https://www.facebook.com/tr?id=1&ev=PageView', 'Meta Pixel'],
-    ['https://connect.facebook.net/en_US/fbevents.js', 'Meta (Pixel or SDK)'],
+    ['https://connect.facebook.net/en_US/fbevents.js', 'Meta (Pixel/SDK)'],
     ['https://static.hotjar.com/c/hotjar-123.js', 'Hotjar'],
     ['https://www.clarity.ms/tag/abcdef', 'Microsoft Clarity'],
     ['https://cdn.segment.com/analytics.js/v1/key/analytics.min.js', 'Segment'],

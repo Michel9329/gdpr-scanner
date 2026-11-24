@@ -1,20 +1,25 @@
 {
   "name": "gdpr-scanner",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "private": true,
   "license": "MIT",
-  "description": "Cloudflare Worker that opens a site in a headless browser (Browser Rendering) and reports trackers loaded before consent, Google Fonts from the CDN, Google Consent Mode, consent platforms and missing policies.",
+  "author": "Michel Dimitri",
+  "description": "Cloudflare Worker that opens a site in a headless browser (Browser Run) and reports trackers loaded before consent, Google Fonts from the CDN, Google Consent Mode, consent platforms and missing policies.",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --remote",
+    "dev": "wrangler dev",
+    "dev:remote": "wrangler dev --remote",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "test": "bun test"
+    "test": "bun test",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json"
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.1.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261104.1",
+    "@types/bun": "^1.4.5",
     "typescript": "^5.6.0",
     "wrangler": "^4.0.0"
   },

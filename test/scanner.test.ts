@@ -14,10 +14,13 @@ import {
   detectConsentMode,
   detectGoogleFonts,
   detectTrackers,
-  classifyCookies,
+  cookieVendors,
+  findPrivacyPolicyUrl,
+  pageLanguage,
   CUSTOM_CMP,
 } from '../src/detect';
-import { buildResult } from '../src/verdict';
+import type { CmpEvidence } from '../src/detect';
+import { buildResult, notScannedResult } from '../src/verdict';
 import worker from '../src/index';
 import { classifyCookieName } from '../data/cookie-patterns';
 
@@ -57,10 +60,12 @@ function makeScan(partial: ScanOverride = {}): RawScan {
   };
 }
 
-// Reusable policy links (privacy + cookie) for the cases where we want the policies present.
+// Reusable policy links (privacy + cookie) for the cases where we want the policies present, plus
+// one ordinary link: a page needs 3 links to be judged without a tracker.
 const POLICY_LINKS = [
   { href: '/privacy', text: 'Privacy Policy' },
   { href: '/cookie-policy', text: 'Cookie Policy' },
+  { href: '/contatti', text: 'Contatti' },
 ];
 
 // Shortcut: find a finding by id.
@@ -277,7 +282,7 @@ describe('8. reachable false', () => {
     reachable: false,
     html: '',
     links: [],
-    error: 'navigation: net::ERR_NAME_NOT_RESOLVED',
+    error: 'navigation-failed',
   });
   const res = buildResult(scan);
 
@@ -286,7 +291,7 @@ describe('8. reachable false', () => {
     expect(res.verdict).toBeNull();
   });
   test('error propagated from the scan', () => {
-    expect(res.error).toContain('ERR_NAME_NOT_RESOLVED');
+    expect(res.error).toBe('navigation-failed');
   });
   test('a long page with reachable:false stays not evaluable', () => {
     // even with substantial html, if reachable=false -> scanned:false
@@ -316,7 +321,7 @@ describe('9. custom banner vs false positive on cookie link/text', () => {
     });
     const cmp = detectCmp(scan);
     expect(cmp.id).toBeNull();
-    expect(cmp.detected).toBeNull();
+    expect(cmp.name).toBeNull();
   });
 
   test('"cookieconsent" text in the body (not in id/class) must NOT be detected as a banner', () => {
@@ -437,18 +442,94 @@ describe('11. detectConsentMode', () => {
     expect(cm.version).toBe('v2');
   });
 
-  test('hasGoogleTag true if dataLayer is non-empty, present false without consent', () => {
-    const scan = makeScan({ globals: { dataLayer: [['config', 'G-XXX']] } });
+  test('a non-empty dataLayer alone is not a Google tag: no no-consent-mode finding', () => {
+    const scan = makeScan({ links: POLICY_LINKS, globals: { dataLayer: [['config', 'G-XXX']] } });
     const cm = detectConsentMode(scan);
-    expect(cm.hasGoogleTag).toBe(true);
+    expect(cm.hasGoogleTag).toBe(false);
     expect(cm.present).toBe(false);
+    expect(finding(buildResult(scan), 'no-consent-mode')).toBeUndefined();
+  });
+
+  test('a request to a Google tag host without consent signals -> no-consent-mode minor', () => {
+    const scan = makeScan({
+      links: POLICY_LINKS,
+      globals: { dataLayer: [['config', 'G-XXX']] },
+      network: [{ url: 'https://www.googletagmanager.com/gtag/js?id=G-XXX', type: 'script' }],
+    });
+    expect(detectConsentMode(scan).hasGoogleTag).toBe(true);
+    expect(finding(buildResult(scan), 'no-consent-mode')?.severity).toBe('minor');
+  });
+
+});
+
+// ===========================================================================
+// 11b. gcd: sent on every Google hit, so only a set signal proves Consent Mode
+// ===========================================================================
+describe('11b. gcd parameter', () => {
+  const hit = (q: string) => ({ url: `https://www.google-analytics.com/g/collect?v=2&${q}&tid=G-1`, type: 'ping' });
+  const cmFor = (...qs: string[]) => detectConsentMode(makeScan({ network: qs.map(hit) }));
+  const result = (cm: ReturnType<typeof detectConsentMode>) => [cm.present, cm.version];
+
+  test('all four signals "l" (not set with Consent Mode) -> not present', () => {
+    expect(result(cmFor('gcd=11l1l1l1l5'))).toEqual([false, null]);
+  });
+  test('one "p" (denied by default): only analytics_storage set -> present, v1', () => {
+    expect(result(cmFor('gcd=11l1p1l1l5'))).toEqual([true, 'v1']);
+  });
+  test('"r" and "v" (after an update) on all four signals -> present, v2', () => {
+    expect(result(cmFor('gcd=11r1r1r1r5'))).toEqual([true, 'v2']);
+    expect(result(cmFor('gcd=11v1v1v1v5'))).toEqual([true, 'v2']);
+    expect(result(cmFor('gcd=11l1l1n1l5'))).toEqual([true, 'v2']); // ad_user_data granted after update
+  });
+  test('separator and closing digits of any value', () => {
+    expect(result(cmFor('gcd=13p3p3p3p5'))).toEqual([true, 'v2']);
+    expect(result(cmFor('gcd=10t7t2t9t0'))).toEqual([true, 'v2']);
+    expect(result(cmFor('gcd=13l3l3l3l1'))).toEqual([false, null]);
+  });
+  test('a letter outside the documented table decides nothing', () => {
+    expect(result(cmFor('gcd=11x1x1x1x5'))).toEqual([false, null]);
+    expect(result(cmFor('gcd=11l1L1z1l5'))).toEqual([false, null]);
+    expect(result(cmFor('gcd=11x1p1l1l5'))).toEqual([true, 'v1']); // the "p" still counts
+  });
+  test('garbage or a missing value decides nothing', () => {
+    for (const q of ['gcd=', 'gcd=abc', 'gcd=11p', 'gcd=11p1p1p1p1p1p5', 'gcd=p1p1p1p5', 'gcd=11%70%31p1p1p5', 'gcd=11p1p1p1p5x']) {
+      expect([q, ...result(cmFor(q))]).toEqual([q, false, null]);
+    }
+  });
+  test('gcs on a hit whose gcd has all four signals "l" proves nothing', () => {
+    expect(result(cmFor('gcd=13l3l3l3l1&gcs=G111'))).toEqual([false, null]);
+    expect(result(cmFor('gcs=G111&gcd=11l1l1l1l5'))).toEqual([false, null]);
+  });
+  test('an empty gcs proves nothing', () => {
+    expect(result(cmFor('gcs='))).toEqual([false, null]);
+    expect(result(cmFor('gcs=&gcd=garbage'))).toEqual([false, null]);
+  });
+  test('gcs counts on a hit with no gcd, or with an unparseable one', () => {
+    expect(result(cmFor('gcs=G100'))).toEqual([true, 'v1']);
+    expect(result(cmFor('gcd=garbage&gcs=G100'))).toEqual([true, 'v1']);
+  });
+  test('a gcd with a fifth segment is ignored whole; gcs on the same hit then counts', () => {
+    expect(result(cmFor('gcd=13r3r3r3r5l1'))).toEqual([false, null]);
+    expect(result(cmFor('gcd=13l3l3l3l1l1&gcs=G100'))).toEqual([true, 'v1']);
+  });
+  test('an unparseable gcd falls back to the other evidence', () => {
+    expect(result(cmFor('gcd=garbage', 'gcs=G100'))).toEqual([true, 'v1']);
+    const withCommand = detectConsentMode(
+      makeScan({ network: [hit('gcd=garbage')], globals: { dataLayer: [['consent', 'default', { ad_storage: 'denied' }]] } }),
+    );
+    expect(result(withCommand)).toEqual([true, 'v1']);
+  });
+  test('a Google tag with only an all-"l" gcd and no other evidence -> no-consent-mode', () => {
+    const res = buildResult(makeScan({ links: POLICY_LINKS, network: [hit('gcd=11l1l1l1l5')] }));
+    expect(finding(res, 'no-consent-mode')?.severity).toBe('minor');
+    expect(res.summary.consentMode).toBeNull();
   });
 });
 
 // ===========================================================================
-// 12. classifyCookies / classifyCookieName: known trackers recognized, technical cookies not
+// 12. cookieVendors / classifyCookieName: known trackers recognized, technical cookies not
 // ===========================================================================
-describe('12. classifyCookies recognizes trackers, not technical cookies', () => {
+describe('12. cookieVendors recognizes trackers, not technical cookies', () => {
   test('_ga / _fbp / _hjSession recognized', () => {
     expect(classifyCookieName('_ga')).not.toBeNull();
     expect(classifyCookieName('_ga_ABC123')).not.toBeNull(); // prefix match
@@ -467,7 +548,7 @@ describe('12. classifyCookies recognizes trackers, not technical cookies', () =>
     expect(classifyCookieName('')).toBeNull();
   });
 
-  test('classifyCookies aggregates unique vendors', () => {
+  test('cookieVendors aggregates unique vendors', () => {
     const scan = makeScan({
       cookies: [
         { name: '_ga', domain: 'example.com' },
@@ -476,11 +557,11 @@ describe('12. classifyCookies recognizes trackers, not technical cookies', () =>
         { name: 'PHPSESSID', domain: 'example.com' }, // ignored
       ],
     });
-    const ck = classifyCookies(scan);
-    expect(ck.vendors).toContain('Google Analytics');
-    expect(ck.vendors).toContain('Meta Pixel');
+    const vendors = cookieVendors(scan.cookies);
+    expect(vendors).toContain('Google Analytics');
+    expect(vendors).toContain('Meta Pixel');
     // Google Analytics appears only once even with two _ga cookies.
-    expect(ck.vendors.filter((v) => v === 'Google Analytics').length).toBe(1);
+    expect(vendors.filter((v) => v === 'Google Analytics').length).toBe(1);
   });
 });
 
@@ -554,7 +635,7 @@ describe('extra. detectPolicies', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tier A (2026-07-04): banner UX + pre-ticked checkboxes + poor privacy notice
+// Tier A: banner UX + pre-ticked checkboxes + poor privacy notice
 // ---------------------------------------------------------------------------
 describe('Tier A: banner UX / pre-ticked / privacy notice', () => {
   const POLICY = [
@@ -563,10 +644,11 @@ describe('Tier A: banner UX / pre-ticked / privacy notice', () => {
     { href: 'https://example.com/x', text: 'X' },
   ];
 
-  test('banner with Accept but no reject or X -> banner-no-reject serious', () => {
+  test('banner with Accept but no reject or X, known CMP -> banner-no-reject serious', () => {
     const scan = makeScan({
       links: POLICY,
-      banner: { found: true, accept: true, reject: false, close: false, policyLink: true },
+      globals: { cmpGlobals: ['_iub'] },
+      banner: { found: true, accept: true, reject: false, close: false, settings: false, unknown: 0, policyLink: true },
     });
     const res = buildResult(scan);
     expect(finding(res, 'banner-no-reject')?.severity).toBe('serious');
@@ -576,7 +658,7 @@ describe('Tier A: banner UX / pre-ticked / privacy notice', () => {
   test('banner with reject at the first level -> NO banner-no-reject', () => {
     const scan = makeScan({
       links: POLICY,
-      banner: { found: true, accept: true, reject: true, close: false, policyLink: true },
+      banner: { found: true, accept: true, reject: true, close: false, settings: false, unknown: 0, policyLink: true },
     });
     expect(finding(buildResult(scan), 'banner-no-reject')).toBeUndefined();
   });
@@ -584,7 +666,7 @@ describe('Tier A: banner UX / pre-ticked / privacy notice', () => {
   test('banner with only an X -> NO banner-no-reject (X = continue without consent, guidelines s.7.1)', () => {
     const scan = makeScan({
       links: POLICY,
-      banner: { found: true, accept: true, reject: false, close: true, policyLink: true },
+      banner: { found: true, accept: true, reject: false, close: true, settings: false, unknown: 0, policyLink: true },
     });
     expect(finding(buildResult(scan), 'banner-no-reject')).toBeUndefined();
   });
@@ -592,12 +674,12 @@ describe('Tier A: banner UX / pre-ticked / privacy notice', () => {
   test('banner without a notice link -> banner-no-policy-link minor', () => {
     const scan = makeScan({
       links: POLICY,
-      banner: { found: true, accept: true, reject: true, close: false, policyLink: false },
+      banner: { found: true, accept: true, reject: true, close: false, settings: false, unknown: 0, policyLink: false },
     });
     expect(finding(buildResult(scan), 'banner-no-policy-link')?.severity).toBe('minor');
   });
 
-  test('old cached scan without the banner field -> no banner finding (backward compatible)', () => {
+  test('no banner observed -> no banner finding', () => {
     const scan = makeScan({ links: POLICY }); // banner undefined
     const res = buildResult(scan);
     expect(finding(res, 'banner-no-reject')).toBeUndefined();
@@ -629,10 +711,25 @@ describe('Tier A: banner UX / pre-ticked / privacy notice', () => {
     expect(finding(buildResult(scan, { checked: true, missing: ['titolare', 'reclamo'] }), 'privacy-policy-incomplete')).toBeUndefined();
     expect(finding(buildResult(scan, { checked: false, missing: [] }), 'privacy-policy-incomplete')).toBeUndefined();
   });
+
+  const page = (lang: string) => '<!doctype html><html lang="' + lang + '"><body>' + 'contenuto della pagina. '.repeat(150) + '</body></html>';
+  const FOUR_MISSING = { checked: true, missing: ['titolare', 'finalita', 'reclamo', 'conservazione'] };
+
+  test('German page whose notice came back checked with four missing keys -> no finding', () => {
+    const res = buildResult(makeScan({ links: POLICY, html: page('de') }), FOUR_MISSING);
+    expect(finding(res, 'privacy-policy-incomplete')).toBeUndefined();
+  });
+
+  test('Italian, English or Spanish page with the same notice result -> finding', () => {
+    for (const lang of ['it', 'it-IT', 'en-GB', 'es']) {
+      const res = buildResult(makeScan({ links: POLICY, html: page(lang) }), FOUR_MISSING);
+      expect([lang, finding(res, 'privacy-policy-incomplete')?.severity]).toEqual([lang, 'moderate']);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Tier B stateful (2026-07-05): scroll test + reject test (evidence = cookie diff only)
+// Tier B stateful: scroll test + reject test (evidence = cookie diff only)
 // ---------------------------------------------------------------------------
 describe('Tier B: scroll / reject / banner reappearance', () => {
   const POLICY = [
@@ -640,7 +737,7 @@ describe('Tier B: scroll / reject / banner reappearance', () => {
     { href: 'https://example.com/cookie', text: 'Cookie policy' },
     { href: 'https://example.com/x', text: 'X' },
   ];
-  const BANNER_OK = { found: true, accept: true, reject: true, close: false, policyLink: true };
+  const BANNER_OK = { found: true, accept: true, reject: true, close: false, settings: false, unknown: 0, policyLink: true };
 
   test('_ga cookie appeared after scroll -> scroll-activates-trackers serious', () => {
     const scan = makeScan({
@@ -714,12 +811,386 @@ describe('Tier B: scroll / reject / banner reappearance', () => {
     expect(finding(buildResult(scan), 'banner-reappears-after-reject')).toBeUndefined();
   });
 
-  test('scan without phase2 (old cache / budget exhausted) -> no Tier B finding', () => {
+  test('scan without phase2 (time budget exhausted) -> no Tier B finding', () => {
     const scan = makeScan({ links: POLICY, banner: BANNER_OK });
     const res = buildResult(scan);
     expect(finding(res, 'scroll-activates-trackers')).toBeUndefined();
     expect(finding(res, 'trackers-after-reject')).toBeUndefined();
     expect(finding(res, 'banner-reappears-after-reject')).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// banner-no-reject: raised only when the banner is fully understood and there is something to refuse
+// ---------------------------------------------------------------------------
+describe('banner-no-reject: doubt and nothing to refuse mean no finding', () => {
+  const POLICY = [
+    { href: 'https://example.com/privacy', text: 'Privacy policy' },
+    { href: 'https://example.com/cookie', text: 'Cookie policy' },
+    { href: 'https://example.com/x', text: 'X' },
+  ];
+  const ONLY_ACCEPT = { found: true, accept: true, reject: false, close: false, settings: false, unknown: 0, policyLink: true };
+
+  test('"Ho capito" notice banner on a site with no tracker, no cookie and no consent platform -> no finding', () => {
+    const res = buildResult(makeScan({ links: POLICY, banner: ONLY_ACCEPT }));
+    expect(finding(res, 'banner-no-reject')).toBeUndefined();
+    expect(res.verdict).toBe('compliant');
+  });
+
+  test('a home-made banner alone is not something to refuse', () => {
+    const scan = makeScan({
+      links: POLICY,
+      html: '<html lang="it"><body><div class="site-cookie-banner">Usiamo cookie</div>' + 'contenuto. '.repeat(300) + '</body></html>',
+      banner: ONLY_ACCEPT,
+    });
+    expect(detectCmp(scan).id).toBe('custom');
+    expect(finding(buildResult(scan), 'banner-no-reject')).toBeUndefined();
+  });
+
+  test('a tracker cookie seen -> finding', () => {
+    const res = buildResult(makeScan({ links: POLICY, cookies: [{ name: '_ga', domain: 'example.com' }], banner: ONLY_ACCEPT }));
+    expect(finding(res, 'banner-no-reject')?.severity).toBe('serious');
+  });
+
+  test('a network tracker seen (consent platform present) -> finding', () => {
+    const res = buildResult(
+      makeScan({
+        links: POLICY,
+        globals: { cmpGlobals: ['Cookiebot'] },
+        network: [{ url: 'https://connect.facebook.net/en_US/fbevents.js', type: 'script' }],
+        banner: ONLY_ACCEPT,
+      }),
+    );
+    expect(finding(res, 'banner-no-reject')?.severity).toBe('serious');
+  });
+
+  test('an IAB TCF API counts as a known consent platform', () => {
+    const res = buildResult(makeScan({ links: POLICY, globals: { hasTcfApi: true }, banner: ONLY_ACCEPT }));
+    expect(finding(res, 'banner-no-reject')).toBeDefined();
+  });
+
+  test('one control the patterns do not know -> doubt, no finding', () => {
+    const res = buildResult(
+      makeScan({ links: POLICY, cookies: [{ name: '_ga', domain: 'example.com' }], banner: { ...ONLY_ACCEPT, unknown: 1 } }),
+    );
+    expect(finding(res, 'banner-no-reject')).toBeUndefined();
+    expect(finding(res, 'trackers-before-consent')).toBeDefined(); // the other findings stand
+  });
+
+  test('"Accept / Manage preferences": a settings control is not a first-level reject -> finding', () => {
+    const res = buildResult(makeScan({ links: POLICY, globals: { cmpGlobals: ['_iub'] }, banner: { ...ONLY_ACCEPT, settings: true } }));
+    expect(finding(res, 'banner-no-reject')?.severity).toBe('serious');
+  });
+
+  for (const [cookie, cmp] of [
+    ['CookieConsentShown', 'Cookiebot'],
+    ['usercentrics_lang', 'Usercentrics'],
+    ['euconsent-v2-backup', 'Iubenda'],
+  ]) {
+    test(`a platform credited only from the site cookie "${cookie}" never raises banner-no-reject`, () => {
+      const res = buildResult(makeScan({ links: POLICY, cookies: [{ name: cookie, domain: 'example.com' }], banner: ONLY_ACCEPT }));
+      expect(finding(res, 'banner-no-reject')).toBeUndefined();
+      expect(res.summary.cmp).toBe(cmp); // the summary still names it
+      expect(detectCmp(makeScan({ cookies: [{ name: cookie, domain: 'example.com' }] })).evidence).toBe('cookie');
+    });
+  }
+
+  test('a cookie-only platform may still lower a severity: request-only tracker is moderate, no no-cmp', () => {
+    const res = buildResult(
+      makeScan({
+        links: POLICY,
+        cookies: [{ name: 'CookieConsentShown', domain: 'example.com' }],
+        network: [{ url: 'https://connect.facebook.net/en_US/fbevents.js', type: 'script' }],
+      }),
+    );
+    expect(finding(res, 'trackers-maybe-ungated')?.severity).toBe('moderate');
+    expect(finding(res, 'trackers-before-consent')).toBeUndefined();
+    expect(finding(res, 'no-cmp')).toBeUndefined();
+  });
+
+  test('the same cookie with the platform host, global or markup -> finding', () => {
+    const cookies = [{ name: 'CookieConsentShown', domain: 'example.com' }];
+    const cases: Array<[CmpEvidence, ScanOverride]> = [
+      ['host', { network: [{ url: 'https://consent.cookiebot.com/uc.js', type: 'script' }] }],
+      ['global', { globals: { cmpGlobals: ['Cookiebot'] } }],
+      ['selector', { html: '<html><body><div id="CybotCookiebotDialog">Cookie</div>' + 'contenuto. '.repeat(300) + '</body></html>' }],
+    ];
+    for (const [expected, extra] of cases) {
+      const scan = makeScan({ links: POLICY, cookies, banner: ONLY_ACCEPT, ...extra });
+      expect([detectCmp(scan).evidence, finding(buildResult(scan), 'banner-no-reject')?.severity]).toEqual([expected, 'serious']);
+    }
+  });
+
+  test('an IAB TCF API is stronger evidence than a cookie name of a listed platform', () => {
+    const cmp = detectCmp(makeScan({ cookies: [{ name: 'euconsent-v2', domain: 'example.com' }], globals: { hasTcfApi: true } }));
+    expect([cmp.id, cmp.evidence]).toEqual(['tcf', 'tcf']);
+  });
+
+  test('a settings control is itself something to refuse: home-made banner, nothing seen -> finding', () => {
+    const scan = makeScan({
+      links: POLICY,
+      html: '<html lang="it"><body><div class="site-cookie-banner">Usiamo cookie</div>' + 'contenuto. '.repeat(300) + '</body></html>',
+      banner: { ...ONLY_ACCEPT, settings: true },
+    });
+    expect(detectCmp(scan).id).toBe('custom');
+    expect(finding(buildResult(scan), 'banner-no-reject')?.severity).toBe('serious');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pages that cannot be judged: error status, not HTML, no navigation
+// ---------------------------------------------------------------------------
+describe('pages that get no verdict, or no policy-link findings', () => {
+  const challenge =
+    '<html><head><title>Just a moment...</title><script>' +
+    'window._cf_chl_opt={cvId:"3",cType:"managed"};'.repeat(80) +
+    '</script></head><body><h1>Checking your browser</h1></body></html>';
+
+  test('403 challenge page with substantial html -> scanned false, empty-or-blocked', () => {
+    const res = buildResult(makeScan({ status: 403, html: challenge, links: [] }));
+    expect(res.scanned).toBe(false);
+    expect(res.verdict).toBeNull();
+    expect(res.error).toBe('empty-or-blocked');
+    expect(res.findings).toEqual([]);
+  });
+
+  test('any status >= 400 gets no verdict, even with links and trackers', () => {
+    for (const status of [400, 404, 429, 500, 503]) {
+      const res = buildResult(makeScan({ status, links: POLICY_LINKS, cookies: [{ name: '_ga', domain: 'example.com' }] }));
+      expect([status, res.scanned, res.error]).toEqual([status, false, 'empty-or-blocked']);
+    }
+  });
+
+  test('a document that is not HTML gets no verdict', () => {
+    for (const contentType of ['application/pdf', 'text/plain', 'image/png', 'application/json']) {
+      const res = buildResult(makeScan({ contentType }));
+      expect([contentType, res.scanned, res.error]).toEqual([contentType, false, 'empty-or-blocked']);
+    }
+  });
+
+  test('text/html, application/xhtml+xml, empty or absent content type are judged', () => {
+    for (const contentType of ['text/html', 'application/xhtml+xml', '', undefined]) {
+      expect([contentType, buildResult(makeScan({ contentType })).scanned]).toEqual([contentType, true]);
+    }
+  });
+
+  test('status 0 (unknown) is judged as before', () => {
+    expect(buildResult(makeScan({ status: 0 })).scanned).toBe(true);
+  });
+
+  test('trackers and one link: judged, no policy findings, the other findings stand', () => {
+    const res = buildResult(
+      makeScan({
+        links: [{ href: '/', text: 'Home' }],
+        cookies: [{ name: '_ga', domain: 'example.com' }],
+        network: [{ url: 'https://fonts.googleapis.com/css2?family=Inter', type: 'stylesheet' }],
+      }),
+    );
+    expect(res.scanned).toBe(true);
+    expect(finding(res, 'no-privacy-policy')).toBeUndefined();
+    expect(finding(res, 'no-cookie-policy')).toBeUndefined();
+    expect(finding(res, 'trackers-before-consent')).toBeDefined();
+    expect(finding(res, 'google-fonts-cdn')).toBeDefined();
+  });
+
+  test('a tracker seen only in the requests, and two links: judged', () => {
+    const res = buildResult(
+      makeScan({ links: [{ href: '/', text: 'Home' }, { href: '#', text: 'Skip' }], network: [{ url: 'https://connect.facebook.net/en_US/fbevents.js', type: 'script' }] }),
+    );
+    expect(res.scanned).toBe(true);
+    expect(finding(res, 'trackers-before-consent')).toBeDefined();
+    expect(finding(res, 'no-privacy-policy')).toBeUndefined();
+  });
+
+  // A JavaScript challenge or an empty application shell: 200, text/html, kilobytes of script, no navigation.
+  const shell =
+    '<!doctype html><html><head><script>' + 'window.__chl={a:1,b:"managed"};'.repeat(120) + '</script></head><body><div id="root"></div></body></html>';
+  for (const [name, links] of [
+    ['0 links', []],
+    ['1 link', [{ href: '/', text: 'Home' }]],
+    ['2 links', [{ href: '/', text: 'Home' }, { href: '#', text: 'Skip' }]],
+  ] as const) {
+    test(`a long page with ${name} and nothing non-essential seen -> no verdict`, () => {
+      for (const contentType of ['text/html', '']) {
+        const res = buildResult(makeScan({ html: shell, links: [...links], contentType }));
+        expect([contentType, res.scanned, res.verdict, res.error]).toEqual([contentType, false, null, 'empty-or-blocked']);
+      }
+    });
+  }
+
+  test('few links with only an exempt tool, a tag manager or Google Fonts -> no verdict', () => {
+    for (const url of ['https://stats.example.com/matomo.js', 'https://www.googletagmanager.com/gtm.js?id=GTM-1', 'https://fonts.googleapis.com/css2?family=Inter']) {
+      const res = buildResult(makeScan({ html: shell, links: [{ href: '/', text: 'Home' }], network: [{ url, type: 'script' }] }));
+      expect([url, res.scanned, res.error]).toEqual([url, false, 'empty-or-blocked']);
+    }
+  });
+
+  test('a tiny page with few links is still not evaluable, even with a tracker cookie', () => {
+    const res = buildResult(makeScan({ html: '<html><body>Hi</body></html>', links: [{ href: '/', text: 'Home' }] }));
+    expect(res.error).toBe('empty-or-blocked');
+    const withCookie = buildResult(
+      makeScan({ html: '<html><body>Hi</body></html>', links: [{ href: '/', text: 'Home' }], cookies: [{ name: '_ga', domain: 'example.com' }] }),
+    );
+    expect([withCookie.scanned, withCookie.error]).toEqual([false, 'empty-or-blocked']);
+  });
+
+  test('notScannedResult: no verdict, empty summary, the given error', () => {
+    expect(notScannedResult('https://example.com/', 'daily-budget')).toEqual({
+      scanned: false,
+      verdict: null,
+      score: 0,
+      findings: [],
+      summary: { trackers: [], tagManager: false, cmp: null, consentMode: null, googleFonts: false, privacyPolicy: false, cookiePolicy: false },
+      finalUrl: 'https://example.com/',
+      error: 'daily-budget',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Policy links in other languages, and pages in a language the words do not cover
+// ---------------------------------------------------------------------------
+describe('policy links across languages', () => {
+  const NAV = [
+    { href: 'https://example.com/', text: 'Home' },
+    { href: 'https://example.com/a', text: 'A' },
+  ];
+  const privacyLinks: Array<[lang: string, href: string, text: string]> = [
+    ['fr', 'https://x.fr/politique-de-confidentialite', 'Politique de confidentialité'],
+    ['fr', 'https://x.fr/mentions', 'Données personnelles'],
+    ['fr', 'https://x.fr/donnees-personnelles', 'Vos données'],
+    ['pl', 'https://x.pl/polityka-prywatnosci', 'Polityka prywatności'],
+    ['sv', 'https://x.se/integritetspolicy', 'Integritetspolicy'],
+    ['da', 'https://x.dk/privatlivspolitik', 'Privatlivspolitik'],
+    ['nb', 'https://x.no/personvernerklaering', 'Personvernerklæring'],
+    ['fi', 'https://x.fi/tietosuojaseloste', 'Tietosuojaseloste'],
+    ['de', 'https://x.de/datenschutz', 'Datenschutzerklärung'],
+    ['pt', 'https://x.pt/privacidade', 'Política de privacidade'],
+  ];
+  for (const [lang, href, text] of privacyLinks) {
+    test(`${lang}: "${text}" is a privacy link, found by both detectPolicies and findPrivacyPolicyUrl`, () => {
+      const scan = makeScan({ links: [...NAV, { href, text }] });
+      expect(detectPolicies(scan).hasPrivacy).toBe(true);
+      expect(findPrivacyPolicyUrl(scan)).toBe(href);
+    });
+  }
+
+  test('cookie policy words: Swedish "kakor", Finnish "evästeet", Norwegian "informasjonskapsler", Polish "ciasteczka"', () => {
+    for (const [href, text] of [
+      ['https://x.se/om-kakor', 'Om kakor'],
+      ['https://x.fi/evasteet', 'Evästeet'],
+      ['https://x.no/informasjonskapsler', 'Informasjonskapsler'],
+      ['https://x.pl/polityka-ciasteczek', 'Polityka ciasteczek'],
+    ]) {
+      expect([text, detectPolicies(makeScan({ links: [...NAV, { href, text }] })).hasCookie]).toEqual([text, true]);
+    }
+  });
+
+  test('"kakor" and "ciasteczka" alone are cakes and biscuits, not a cookie policy', () => {
+    for (const [href, text] of [
+      ['https://x.se/kakor', 'Kakor och bakverk'],
+      ['https://x.pl/ciasteczka', 'Ciasteczka maślane'],
+    ]) {
+      expect([text, detectPolicies(makeScan({ links: [...NAV, { href, text }] })).hasCookie]).toEqual([text, false]);
+    }
+  });
+
+  test('a cookie policy link alone is not the privacy notice', () => {
+    const scan = makeScan({ links: [...NAV, { href: 'https://example.com/cookie-policy', text: 'Cookie policy' }] });
+    expect(findPrivacyPolicyUrl(scan)).toBeNull();
+  });
+
+  // Which page is read as the privacy notice: menus come before footers.
+  const H = 'https://site.example.com';
+  const at = (links: Array<[path: string, text: string]>) =>
+    makeScan({ finalUrl: H + '/', requestedUrl: H + '/', links: links.map(([p, text]) => ({ href: p.startsWith('http') ? p : H + p, text })) });
+
+  test('a weak word in a menu link does not beat the footer notice', () => {
+    for (const [menuPath, menuText] of [
+      ['/servizi/consulenza-gdpr', 'Consulenza GDPR'],
+      ['/blog/nuova-privacy-di-whatsapp', 'La nuova privacy di WhatsApp'],
+      ['/prodotti/scheda-informativa', 'Scheda informativa'],
+      ['/legal/confidentiality-agreement', 'Confidentiality agreement'],
+      ['/om-oss/integritet-och-kvalitet', 'Integritet och kvalitet'],
+    ]) {
+      const scan = at([['/', 'Home'], [menuPath, menuText], ['/contatti', 'Contatti'], ['/privacy-policy', 'Privacy Policy']]);
+      expect([menuText, findPrivacyPolicyUrl(scan)]).toEqual([menuText, H + '/privacy-policy']);
+      expect(detectPolicies(scan).hasPrivacy).toBe(true);
+    }
+  });
+
+  test('weak words alone count for presence, but no page is read as the notice', () => {
+    const scan = at([['/', 'Home'], ['/servizi/gdpr', 'Consulenza GDPR'], ['/legal/nda', 'Confidentiality agreement']]);
+    expect(detectPolicies(scan).hasPrivacy).toBe(true);
+    expect(findPrivacyPolicyUrl(scan)).toBeNull();
+  });
+
+  test('among strong links on the same host the last one wins, and the same host beats another host', () => {
+    const scan = at([
+      ['/informativa-privacy', 'Informativa privacy'],
+      ['/', 'Home'],
+      ['/privacy-policy', 'Privacy'],
+      ['https://www.iubenda.com/privacy-policy/123', 'Privacy Policy'],
+    ]);
+    expect(findPrivacyPolicyUrl(scan)).toBe(H + '/privacy-policy');
+    const offHost = at([['/', 'Home'], ['https://www.iubenda.com/privacy-policy/1', 'Privacy Policy'], ['https://legal.example.org/privacy-notice', 'Notice']]);
+    expect(findPrivacyPolicyUrl(offHost)).toBe('https://legal.example.org/privacy-notice');
+  });
+
+  test('a whole link text "Privacy" or "Informativa" is strong, unless the link goes to a cookie page', () => {
+    expect(findPrivacyPolicyUrl(at([['/', 'Home'], ['/note', 'Informativa']]))).toBe(H + '/note');
+    expect(findPrivacyPolicyUrl(at([['/', 'Home'], ['/p', 'Privacy']]))).toBe(H + '/p');
+    expect(findPrivacyPolicyUrl(at([['/', 'Home'], ['/cookie', 'Informativa']]))).toBeNull();
+  });
+
+  test('pageLanguage reads the primary subtag of <html lang>', () => {
+    expect(pageLanguage('<!doctype html><html class="x" lang="de-AT"><body>')).toBe('de');
+    expect(pageLanguage("<html xml:lang='CS'>")).toBe('cs');
+    expect(pageLanguage('<html data-lang="fr"><body>')).toBe('');
+    expect(pageLanguage('<html><body lang="fr">')).toBe('');
+    expect(pageLanguage('<!-- x --><HTML LANG = " IT ">')).toBe('it');
+    expect(pageLanguage('<html lang="english">')).toBe('');
+    expect(pageLanguage('<htmlx lang="fr"><html lang="es">')).toBe('es');
+  });
+
+  test('pageLanguage is linear on hostile markup (each case under 50 ms)', () => {
+    for (const html of [
+      '<html lang=' + ' '.repeat(65_000),
+      '<html lang =' + ' '.repeat(30_000) + '>',
+      '<html ' + 'lang '.repeat(500),
+      '<html' + (' lang' + ' '.repeat(60)).repeat(1000),
+      '<htmlx'.repeat(10_000),
+      '<html lang="' + ' '.repeat(200_000) + 'it">',
+    ]) {
+      const t0 = performance.now();
+      pageLanguage(html);
+      expect(performance.now() - t0).toBeLessThan(50);
+    }
+  });
+
+  test('page in a language the words do not cover (Czech) -> no missing-policy findings', () => {
+    const res = buildResult(
+      makeScan({
+        html: '<!doctype html><html lang="cs"><body>' + 'obsah stránky. '.repeat(300) + '</body></html>',
+        links: [...NAV, { href: 'https://x.cz/ochrana-osobnich-udaju', text: 'Ochrana osobních údajů' }],
+        cookies: [{ name: '_ga', domain: 'x.cz' }],
+      }),
+    );
+    expect(finding(res, 'no-privacy-policy')).toBeUndefined();
+    expect(finding(res, 'no-cookie-policy')).toBeUndefined();
+    expect(finding(res, 'trackers-before-consent')).toBeDefined();
+  });
+
+  test('page in a covered language (Norwegian Nynorsk, nn) without links -> findings raised', () => {
+    const res = buildResult(
+      makeScan({
+        html: '<!doctype html><html lang="nn"><body>' + 'innhald. '.repeat(400) + '</body></html>',
+        links: [...NAV, { href: 'https://x.no/om', text: 'Om oss' }],
+        cookies: [{ name: '_ga', domain: 'x.no' }],
+      }),
+    );
+    expect(finding(res, 'no-privacy-policy')).toBeDefined();
+    expect(finding(res, 'no-cookie-policy')).toBeDefined();
   });
 });
 

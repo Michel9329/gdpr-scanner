@@ -2,11 +2,26 @@
 
 export type Severity = 'critical' | 'serious' | 'moderate' | 'minor';
 
+/** Why a page got no verdict (`scanned: false`). Stable codes: callers can branch on them. */
+export type ScanErrorCode =
+  | 'navigation-failed' // DNS, connection or TLS error
+  | 'navigation-timeout' // nothing usable was loaded in time
+  | 'blocked-redirect' // the site sent the browser to an address the scanner does not load
+  | 'private-address' // the page, or something it loaded, was served from a non-public address
+  | 'empty-or-blocked' // error status, not an HTML document, or almost no content (bot challenge, empty page)
+  | 'scan-timeout' // the page kept the browser busy past the scan deadline
+  | 'daily-budget' // the daily cap was reached
+  | 'budget-unavailable' // the daily counter could not be read or written
+  | 'scan-failed'; // unexpected error in the browser session
+
 /** Raw observations collected by the headless browser (no judgment here). */
 export interface RawScan {
   requestedUrl: string;
   finalUrl: string;
+  /** HTTP status of the main document (0 when unknown). */
   status: number;
+  /** Media type of the main document, lower case and without parameters ("text/html"); '' or absent when unknown. */
+  contentType?: string;
   reachable: boolean;
   /** HTML after load (PRE-consent state: we do not click any banner). */
   html: string;
@@ -25,15 +40,15 @@ export interface RawScan {
     /** which known CMP globals are present (e.g. "_iub", "Cookiebot"). */
     cmpGlobals: string[];
   };
-  /** UX observation of the cookie banner VISIBLE at the first level.
-   *  Optional: absent on old scans in the KV cache and in older test fixtures. */
+  /** UX observation of the cookie banner VISIBLE at the first level. Absent or null when no
+   *  banner was observed. */
   banner?: BannerObs | null;
   /** Consent checkboxes ALREADY ticked in visible forms (EDPB 05/2020: pre-ticked = invalid consent). */
   preticked?: { count: number; sample: string };
-  /** Tier B (2026-07-05): stateful observations (scroll test + reject test). Optional: absent on
-   *  old scans in the cache and when the time budget does not allow it. */
+  /** Tier B: stateful observations (scroll test + reject test). Absent when the time budget did
+   *  not allow them or the phase failed. */
   phase2?: Phase2Obs;
-  error?: string;
+  error?: ScanErrorCode;
 }
 
 /** Tier B observations. Evidence = ONLY new cookies (diff), never judgments here. */
@@ -63,6 +78,11 @@ export interface BannerObs {
   reject: boolean;
   /** close (X) button present */
   close: boolean;
+  /** a control that opens the preferences (settings, customize, manage...) is present */
+  settings: boolean;
+  /** visible controls whose label matched none of the above and is not a policy link: each one
+   *  could be a reject control in words the patterns do not know */
+  unknown: number;
   /** link to the notice (privacy/cookie policy) inside the banner */
   policyLink: boolean;
 }
@@ -81,13 +101,6 @@ export interface PrivacyFinding {
   id: string;
   severity: Severity;
   data?: Record<string, string | number>;
-}
-
-/** Detected item, shown in the "what we found" list. */
-export interface DetectedItem {
-  kind: 'tracker' | 'cmp' | 'consent-mode' | 'google-fonts' | 'policy' | 'tag-manager';
-  name: string;
-  detail?: string;
 }
 
 export type Verdict = 'compliant' | 'partial' | 'non-compliant';
@@ -112,5 +125,5 @@ export interface PrivacyResult {
   findings: PrivacyFinding[];
   summary: PrivacySummary;
   finalUrl: string;
-  error?: string;
+  error?: ScanErrorCode;
 }

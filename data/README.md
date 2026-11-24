@@ -4,15 +4,45 @@ Three hand-written lists drive detection:
 
 | File | What it holds |
 |---|---|
-| `tracker-hosts.ts` | Hostname substring to tracker (entity, name, category). Unknown hosts are never flagged. |
-| `cmp-signatures.ts` | How to recognise a consent platform: network hosts, JS globals, cookie names, DOM selectors. |
-| `cookie-patterns.ts` | Cookie name prefixes and exact names of common analytics and marketing cookies. |
+| `tracker-hosts.ts` | Host to tracker (name, category, and whether it is exempt). An entry matches the host or a subdomain, optionally with a path. Unknown hosts are never flagged, and the functional hosts listed at the end (CDNs, payments, reCAPTCHA and others) are never reported as trackers. |
+| `cmp-signatures.ts` | How to recognise a consent platform: network hosts, JS globals, cookie names (a name or the start of one), DOM selectors (matched only inside an `id` or `class` attribute of the markup). One signal is enough. |
+| `cookie-patterns.ts` | Exact names and name patterns of analytics and marketing cookies set on the visited site's own domain. |
 
 ## Provenance
 
 All three were written by hand for this project from publicly known vendor hostnames and vendor
 documentation. They are not copied or derived from any third-party list. The lists are short on
 purpose and will miss trackers. Adding an entry is a one-line change per host.
+
+## How entries match
+
+A request belongs to a vendor when its host is the vendor's host or a subdomain of it. Apart from the
+keyword entries described below, the lists never look for a vendor name anywhere in the URL:
+`cheap.io` is not `heap.io`, and a script called `customer-segment.common.js` is not Segment. The
+entry forms are in `src/hosts.ts`:
+
+| Entry | Matches |
+|---|---|
+| `vendor.com` | `vendor.com` and its subdomains |
+| `vendor.com/path` | the same hosts, and a request path under `/path` |
+| `label.vendor.*` | the host `label.vendor.` followed by a country or generic ending of two or three letters, optionally a dot and two more (`adservice.google.it`, `adservice.google.co.uk`); not a subdomain of it and not a longer tail such as `adservice.google.evil.example` |
+| `keyword: true` | a word looked for in the host and path, for self-hosted tools such as Matomo. Keyword entries are tried after every host rule, so a word in the path of a known vendor's URL does not hide the vendor |
+
+In `cmp-signatures.ts`, a `hosts` entry with a dot is a host rule and counts on any request; an entry
+without a dot (`optanon`) is a word looked for in the host and path, and counts only on requests that
+load code (`script`, `xhr`, `fetch`), never on an image or a stylesheet.
+
+### Cookie names
+
+An entry in `cookie-patterns.ts` has a `match` that is either the exact cookie name (a string) or a
+regular expression the whole name must match, anchored with `^` and `$`. There is no prefix form: a
+prefix such as `_ga` also names a site's own `_gallery_seen` or `_gate`, and `mp_` names `mp_lang`.
+Each expression states the shape the vendor documents, for example `_ga_` plus the container id or
+`mp_<project token>_mixpanel`. No two entries match the same name, so their order does not matter.
+
+Cookies set on the vendor's own domain (Facebook's `fr`, Google's `NID`) are left out on purpose: the
+scan reads the cookies of the page it loaded, so a cookie with one of those names on the visited
+site is something else.
 
 ## Extending them from external sources
 

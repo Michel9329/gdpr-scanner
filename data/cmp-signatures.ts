@@ -11,7 +11,8 @@
 export interface CmpSignature {
   id: string;
   name: string;
-  /** hostname substrings seen in network requests */
+  /** hosts seen in network requests (the host or a subdomain, any request type); an entry without
+   *  a dot is a word looked for in the host and path of script, xhr and fetch requests only */
   hosts: string[];
   /** property names on window (presence = CMP active) */
   globals: string[];

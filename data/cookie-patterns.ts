@@ -1,69 +1,67 @@
-// Non-essential cookie name patterns (high signal). Hand-curated for this project.
+// Non-essential cookie names (high signal). Hand-curated for this project.
 //
 // Covers common analytics/marketing cookies (Google, Meta, Hotjar, Adobe, Criteo, Yandex and others),
 // including cases where the tracker is first-party or the request was cached. This is a SECONDARY
 // signal: the primary one is host classification (tracker-hosts.ts). The full Open Cookie Database
 // (Apache-2.0) is not bundled: at 1-2 MB it would exceed the Worker free-plan size limit.
 //
-// match 'prefix' = cookie name starts with the string (e.g. "_ga" also matches "_ga_ABC123").
-// match 'exact'  = cookie name is identical.
+// `match` is either the exact cookie name (a string) or a regular expression that the WHOLE name
+// must match (anchored with ^ and $). There is no bare prefix form: a prefix such as "_ga" also
+// names a site's own "_gallery_seen" or "_gate", and a wrong name here accuses the wrong site.
+// Each expression states the shape the vendor documents, for example "_ga_" plus the container id.
+// Entries do not overlap, so the order of the list does not matter.
 //
-export type CookieCategory = 'analytics' | 'marketing';
+// Only cookies the tracker sets on the visited site's own domain are listed. The scan reads the
+// cookies of the page it loaded, so a cookie that lives on the vendor's domain (Facebook's `fr`,
+// Google's `NID`, DoubleClick's `IDE`, LinkedIn's `bcookie`) never shows up here: a cookie with one
+// of those names on the visited site is something else, and listing them could only accuse the
+// wrong site. Those vendors are detected from the network requests instead.
 
 export interface CookiePattern {
-  value: string;
-  match: 'prefix' | 'exact';
-  category: CookieCategory;
-  name: string; // who it belongs to (for the "found" list)
+  /** Exact cookie name, or an anchored expression the whole name must match. */
+  match: string | RegExp;
+  /** Who it belongs to (for the "found" list). */
+  name: string;
 }
 
 export const COOKIE_PATTERNS: CookiePattern[] = [
-  // Google Analytics / Ads
-  { value: '_ga', match: 'prefix', category: 'analytics', name: 'Google Analytics' },
-  { value: '_gid', match: 'exact', category: 'analytics', name: 'Google Analytics' },
-  { value: '_gat', match: 'prefix', category: 'analytics', name: 'Google Analytics' },
-  { value: '__utm', match: 'prefix', category: 'analytics', name: 'Google Analytics (Universal)' },
-  { value: '_gcl', match: 'prefix', category: 'marketing', name: 'Google Ads (conversion linker)' },
-  { value: '_gac_', match: 'prefix', category: 'marketing', name: 'Google Ads' },
-  { value: 'IDE', match: 'exact', category: 'marketing', name: 'Google DoubleClick' },
-  { value: 'test_cookie', match: 'exact', category: 'marketing', name: 'Google DoubleClick' },
-  { value: 'NID', match: 'exact', category: 'marketing', name: 'Google' },
+  // Google Analytics: _ga, _ga_<container-id>, _gid, _gat, _gat_<property-id>, __utma/b/c/t/v/z
+  { match: '_ga', name: 'Google Analytics' },
+  { match: /^_ga_[A-Z0-9]+$/, name: 'Google Analytics' },
+  { match: '_gid', name: 'Google Analytics' },
+  { match: '_gat', name: 'Google Analytics' },
+  { match: /^_gat_[\w-]+$/, name: 'Google Analytics' },
+  { match: /^__utm[a-z]$/, name: 'Google Analytics (Universal)' },
+  // Google Ads: conversion linker _gcl_<kind> (_gcl_au, _gcl_aw ...) and _gac_<property-id>
+  { match: /^_gcl_[a-z]+$/, name: 'Google Ads (conversion linker)' },
+  { match: /^_gac_[\w-]+$/, name: 'Google Ads' },
   // Meta / Facebook
-  { value: '_fbp', match: 'exact', category: 'marketing', name: 'Meta Pixel' },
-  { value: '_fbc', match: 'exact', category: 'marketing', name: 'Meta Pixel' },
-  { value: 'fr', match: 'exact', category: 'marketing', name: 'Meta (Facebook)' },
-  // Hotjar
-  { value: '_hj', match: 'prefix', category: 'analytics', name: 'Hotjar' },
+  { match: '_fbp', name: 'Meta Pixel' },
+  { match: '_fbc', name: 'Meta Pixel' },
+  // Hotjar: _hj followed by an upper-case letter (_hjSession_<id>, _hjSessionUser_<id>, _hjFirstSeen ...) or _hjid
+  { match: /^_hj(?:[A-Z]\w*|id)$/, name: 'Hotjar' },
   // Microsoft Clarity / Bing
-  { value: '_clck', match: 'exact', category: 'analytics', name: 'Microsoft Clarity' },
-  { value: '_clsk', match: 'exact', category: 'analytics', name: 'Microsoft Clarity' },
-  { value: 'MUID', match: 'exact', category: 'marketing', name: 'Microsoft' },
-  { value: '_uetsid', match: 'exact', category: 'marketing', name: 'Microsoft Advertising (UET)' },
-  { value: '_uetvid', match: 'exact', category: 'marketing', name: 'Microsoft Advertising (UET)' },
-  // LinkedIn
-  { value: 'li_sugr', match: 'exact', category: 'marketing', name: 'LinkedIn' },
-  { value: 'bcookie', match: 'exact', category: 'marketing', name: 'LinkedIn' },
-  { value: 'UserMatchHistory', match: 'exact', category: 'marketing', name: 'LinkedIn' },
-  // TikTok / Pinterest / Twitter / Snap
-  { value: '_ttp', match: 'exact', category: 'marketing', name: 'TikTok Pixel' },
-  { value: '_pinterest_', match: 'prefix', category: 'marketing', name: 'Pinterest Tag' },
-  { value: '_pin_unauth', match: 'exact', category: 'marketing', name: 'Pinterest Tag' },
-  { value: 'personalization_id', match: 'exact', category: 'marketing', name: 'X (Twitter)' },
-  // Other analytics
-  { value: 'mp_', match: 'prefix', category: 'analytics', name: 'Mixpanel' },
-  { value: 'amplitude_', match: 'prefix', category: 'analytics', name: 'Amplitude' },
-  { value: '__hstc', match: 'exact', category: 'marketing', name: 'HubSpot' },
-  { value: 'hubspotutk', match: 'exact', category: 'marketing', name: 'HubSpot' },
-  { value: '_hjSession', match: 'prefix', category: 'analytics', name: 'Hotjar' },
-  // Adobe / Criteo / Yandex / Taboola / Quantcast
-  { value: 'AMCV_', match: 'prefix', category: 'analytics', name: 'Adobe Experience Cloud' },
-  { value: 'mbox', match: 'exact', category: 'marketing', name: 'Adobe Target' },
-  { value: 'cto_bundle', match: 'exact', category: 'marketing', name: 'Criteo' },
-  { value: 'cto_', match: 'prefix', category: 'marketing', name: 'Criteo' },
-  { value: '_ym_uid', match: 'exact', category: 'analytics', name: 'Yandex Metrica' },
-  { value: '_ym_d', match: 'exact', category: 'analytics', name: 'Yandex Metrica' },
-  { value: 't_gid', match: 'exact', category: 'marketing', name: 'Taboola' },
-  { value: '__qca', match: 'exact', category: 'marketing', name: 'Quantcast' },
+  { match: '_clck', name: 'Microsoft Clarity' },
+  { match: '_clsk', name: 'Microsoft Clarity' },
+  { match: '_uetsid', name: 'Microsoft Advertising (UET)' },
+  { match: '_uetvid', name: 'Microsoft Advertising (UET)' },
+  // TikTok / Pinterest
+  { match: '_ttp', name: 'TikTok Pixel' },
+  { match: /^_pinterest_\w+$/, name: 'Pinterest Tag' },
+  { match: '_pin_unauth', name: 'Pinterest Tag' },
+  // Other analytics: Mixpanel names its cookie mp_<project token>_mixpanel
+  { match: /^mp_[0-9a-f]+_mixpanel$/, name: 'Mixpanel' },
+  { match: /^amplitude_\w+$/, name: 'Amplitude' },
+  { match: '__hstc', name: 'HubSpot' },
+  { match: 'hubspotutk', name: 'HubSpot' },
+  // Adobe (AMCV_<org id>@AdobeOrg, the @ often percent-encoded) / Criteo / Yandex / Taboola / Quantcast
+  { match: /^AMCV_[0-9A-Za-z]+(?:@|%40)AdobeOrg$/, name: 'Adobe Experience Cloud' },
+  { match: 'mbox', name: 'Adobe Target' },
+  { match: 'cto_bundle', name: 'Criteo' },
+  { match: '_ym_uid', name: 'Yandex Metrica' },
+  { match: '_ym_d', name: 'Yandex Metrica' },
+  { match: 't_gid', name: 'Taboola' },
+  { match: '__qca', name: 'Quantcast' },
 ];
 
 /** Classifies a cookie name as non-essential, or null. */
@@ -71,7 +69,7 @@ export function classifyCookieName(name: string): CookiePattern | null {
   const n = (name || '').trim();
   if (!n) return null;
   for (const p of COOKIE_PATTERNS) {
-    if (p.match === 'exact' ? n === p.value : n.startsWith(p.value)) return p;
+    if (typeof p.match === 'string' ? n === p.match : p.match.test(n)) return p;
   }
   return null;
 }

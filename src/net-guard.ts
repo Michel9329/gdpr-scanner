@@ -119,6 +119,24 @@ export function isPrivateAddress(rawIp: string): boolean {
   return b[0] === 0xff; // ff00::/8 multicast
 }
 
+/**
+ * True when a response really came from a private address. The browser reports the peer of its
+ * connection. When that peer is a forward proxy, its port is the proxy's and differs from the URL's,
+ * and the address says nothing about the site. Cloudflare's Browser Run works this way: every
+ * response reports [::1]:9001. With no port to compare, a private address counts.
+ */
+export function responseFromPrivateAddress(ip: string | undefined, port: number | undefined, rawUrl: string): boolean {
+  if (!ip || !isPrivateAddress(ip)) return false;
+  if (!port) return true;
+  try {
+    const u = new URL(rawUrl);
+    const urlPort = u.port ? Number(u.port) : u.protocol === 'https:' ? 443 : u.protocol === 'http:' ? 80 : 0;
+    return port === urlPort;
+  } catch {
+    return true;
+  }
+}
+
 /** Classifies a hostname: a public-looking name, a public IPv4 literal, or something to refuse. */
 export function classifyHost(rawHost: string): HostKind {
   const host = canonicalHost(rawHost);

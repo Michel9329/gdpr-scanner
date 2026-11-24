@@ -8,7 +8,7 @@
 import puppeteer from '@cloudflare/puppeteer';
 import type { BannerObs, Phase2Obs, RawScan, ScanErrorCode } from './types';
 import { CMP_SIGNATURES } from '../data/cmp-signatures';
-import { decideRequest, isPrivateAddress, MAX_URL_LENGTH } from './net-guard';
+import { decideRequest, MAX_URL_LENGTH, responseFromPrivateAddress } from './net-guard';
 import { POLICY_LINK_HINTS } from './detect';
 import { UX_FN, type UxObservation } from './ux';
 
@@ -255,11 +255,13 @@ async function runScan(
 
     // The guard only sees names, and a public name can resolve to a private address. So the
     // address each response really came from is checked too: one answer from a private address
-    // and the page is closed at once; every later request is aborted.
+    // and the page is closed at once; every later request is aborted. Where the browser reaches
+    // the web through a proxy (Cloudflare's Browser Run) the address is the proxy's and this check
+    // has nothing to read: see responseFromPrivateAddress().
     page.on('response', (res) => {
       try {
-        const ip = res.remoteAddress().ip;
-        if (ip && isPrivateAddress(ip)) {
+        const { ip, port } = res.remoteAddress();
+        if (responseFromPrivateAddress(ip, port, res.url())) {
           privateAddressHit = true;
           page.close().catch(() => {});
           return;

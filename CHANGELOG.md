@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1 (24 November 2026)
+
+- **0.2.0 did not work on Cloudflare: every scan ended with `private-address`.** Browser Run reaches
+  the web through a forward proxy and reports it (`[::1]:9001`) as the address of every response, and
+  the address check took that for the site. An address whose port differs from the URL's is now taken
+  for a proxy and not judged. The check still runs where the browser connects directly, as under
+  `wrangler dev`; on Cloudflare it has nothing to read, and the README says so.
+- First checks on Cloudflare's own browser: whole scans of live sites, dialogs, a redirect to another
+  port, an endless script.
+- The Meta tracker is reported as `Meta (Pixel/SDK)`, a name that reads the same in every language.
+
 ## 0.2.0 (24 November 2026)
 
 ### Security and robustness

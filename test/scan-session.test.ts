@@ -32,8 +32,9 @@ class FakeRequest {
 }
 
 class FakeResponse {
-  constructor(readonly req: FakeRequest, readonly ip: string, readonly code = 200, readonly type = 'text/html; charset=utf-8') {}
-  remoteAddress() { return { ip: this.ip, port: 443 }; }
+  constructor(readonly req: FakeRequest, readonly ip: string, readonly code = 200, readonly type = 'text/html; charset=utf-8', readonly port = 443) {}
+  remoteAddress() { return { ip: this.ip, port: this.port }; }
+  url() { return this.req.href; }
   request() { return this.req; }
   status() { return this.code; }
   headers() { return { 'content-type': this.type }; }
@@ -74,8 +75,8 @@ class FakePage extends Emitter {
     this.emit('request', req);
     return req;
   }
-  respond(req: FakeRequest, ip: string) {
-    const res = new FakeResponse(req, ip);
+  respond(req: FakeRequest, ip: string, port = 443) {
+    const res = new FakeResponse(req, ip, 200, 'text/html; charset=utf-8', port);
     this.emit('response', res);
     return res;
   }
@@ -195,6 +196,32 @@ describe('the address check', () => {
         page.respond(page.request('https://tracker.example.com/p.gif'), 'fd00::1');
       }
       return original();
+    };
+    const { result } = await run(page);
+    expect(result.error).toBe('private-address');
+  });
+});
+
+describe('a browser behind a forward proxy (Cloudflare Browser Run)', () => {
+  test('every response reports the proxy on [::1]:9001: the page is read normally', async () => {
+    const page = new FakePage();
+    page.load = async (p, url) => {
+      const doc = p.request(url, true);
+      const res = p.respond(doc, '[::1]', 9001);
+      p.respond(p.request('https://cdn.example.com/app.js'), '[::1]', 9001);
+      return res;
+    };
+    const { result } = await run(page);
+    expect(result.error).toBeUndefined();
+    expect(result.reachable).toBe(true);
+    expect(page.closed).toBe(false);
+  });
+
+  test('a private address on the port of the URL is still a private address', async () => {
+    const page = new FakePage();
+    page.load = async (p, url) => {
+      p.respond(p.request(url, true), '127.0.0.1', 443);
+      throw new Error('Navigating frame was detached');
     };
     const { result } = await run(page);
     expect(result.error).toBe('private-address');

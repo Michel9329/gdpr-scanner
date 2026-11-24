@@ -1,7 +1,7 @@
 // Which hosts the scanner may talk to. Every case here is a way a caller, or a scanned page, could
 // try to point the scanner at something that is not a public website.
 import { test, expect, describe } from 'bun:test';
-import { type RequestDecision, canonicalHost, classifyHost, decideRequest, isPrivateAddress, isPrivateIpv4, isPublicWebUrl, normalizeTargetUrl, parseIpv6 } from '../src/net-guard';
+import { type RequestDecision, canonicalHost, classifyHost, decideRequest, isPrivateAddress, isPrivateIpv4, isPublicWebUrl, normalizeTargetUrl, responseFromPrivateAddress, parseIpv6 } from '../src/net-guard';
 
 describe('normalizeTargetUrl: accepted', () => {
   const ok: Array<[input: string, expected: string]> = [
@@ -237,5 +237,31 @@ describe('isPublicWebUrl and canonicalHost', () => {
   test('canonicalHost lowers the case and drops the root dot', () => {
     expect(canonicalHost(' Example.COM.. ')).toBe('example.com');
     expect(canonicalHost('')).toBe('');
+  });
+});
+
+describe('responseFromPrivateAddress', () => {
+  test.each([
+    // the proxy of Cloudflare's Browser Run: its port is not the URL's
+    ['[::1]', 9001, 'https://www.example.com/', false],
+    ['[::1]', 9001, 'http://www.example.com/', false],
+    ['127.0.0.1', 3128, 'https://www.example.com/', false],
+    // a private peer on the port of the URL: the name really resolved there
+    ['[::1]', 443, 'https://www.example.com/', true],
+    ['127.0.0.1', 80, 'http://localtest.me/', true],
+    ['10.0.0.5', 443, 'https://rebind.example.com/', true],
+    ['169.254.169.254', 80, 'http://rebind.example.com/latest', true],
+    ['127.0.0.1', 8443, 'https://cdn.example.com:8443/a.js', true],
+    // no port to compare, or a URL that does not parse: the address counts
+    ['127.0.0.1', undefined, 'https://www.example.com/', true],
+    ['127.0.0.1', 0, 'https://www.example.com/', true],
+    ['127.0.0.1', 9001, 'not a url', true],
+    // public peers and no address at all
+    ['93.184.216.34', 443, 'https://www.example.com/', false],
+    ['2606:4700::1111', 443, 'https://www.example.com/', false],
+    ['', 443, 'https://www.example.com/', false],
+    [undefined, undefined, 'https://www.example.com/', false],
+  ] as [string | undefined, number | undefined, string, boolean][])('%s:%s for %s -> %s', (ip, port, url, expected) => {
+    expect(responseFromPrivateAddress(ip, port, url)).toBe(expected);
   });
 });

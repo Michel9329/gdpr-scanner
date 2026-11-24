@@ -149,7 +149,17 @@ download; the fallback to the main world when the isolated world is missing; the
 dialog; the deadline passing during the browser launch; the launch retry; the 5-second limit on
 closing the browser; the status and type read after a load timeout; the reload step of the reject
 test. A popup opened by the reject click sent no request, but it is not known whether it opened at
-all. Nothing has been verified on Cloudflare's own browser.
+all.
+
+On Cloudflare's own browser (Browser Run, 24 November 2026), through a Worker preview that took no
+traffic:
+
+- whole scans of live sites;
+- `alert` and `confirm` at load: dismissed, and the scan finished;
+- an HTTP redirect to `example.com:8443`: `blocked-redirect`;
+- an endless loop in a script: `scan-timeout` at 45 seconds.
+
+Nothing aimed at a private address was run there: that would be probing Cloudflare's network.
 
 ## Deploy to Cloudflare
 
@@ -254,7 +264,11 @@ addresses it may reach, and each step applies it:
 - **The address each response came from** is checked, in IPv4 and in IPv6, including the IPv6 forms
   that carry an IPv4 address. One response from a private or reserved address closes the page at
   once, every later request is aborted, and the scan ends with `private-address` without reporting
-  anything of the page.
+  anything of the page. This needs a browser that connects to sites directly, as it does under
+  `wrangler dev`. Cloudflare's Browser Run reaches the web through a forward proxy and reports the
+  proxy (`[::1]:9001`) for every response, so on Cloudflare this check has nothing to read: an address
+  whose port differs from the URL's is taken for a proxy and not judged. There, the rules on names,
+  ports and redirects above are what applies.
 - **The policy page** is fetched by the Worker, not by the browser. A Worker's `fetch` does not tell
   which address it reached, so only names are checked there: each redirect is checked before it is
   requested, with at most 3 redirects, 600 KB and 8 seconds.
@@ -268,8 +282,10 @@ checked again in the Worker: types, string lengths, list sizes.
 
 What remains:
 
-- For a public name that resolves to a private address, requests are sent before the address is
-  known: it is read from the answer, and several requests can leave before the first answer comes
+- On Cloudflare, a public name that resolves to a private address is not detected by the scanner:
+  the connection is made by Cloudflare's proxy, and the browser never learns the address.
+- Where the browser connects directly, for a public name that resolves to a private address, requests
+  are sent before the address is known: it is read from the answer, and several requests can leave before the first answer comes
   back. When an answer comes from a private address the page is closed and nothing of it is read or
   reported. When the private address never answers over HTTP (a closed port, a service that is not a
   web server), there is no answer to read, and every request to it is sent.

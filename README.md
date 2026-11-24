@@ -7,8 +7,8 @@ visitor has consented to anything. Built with Claude Code, designed and reviewed
 
 It exists because the manual version of this check (open DevTools, clear cookies, read the network
 tab) is slow and easy to get wrong across many sites. It was built for the privacy check of the free
-site audit at [sharkcodestudio.com](https://sharkcodestudio.com/en/strumenti/audit), where an earlier
-version runs in production.
+site audit at [sharkcodestudio.com](https://sharkcodestudio.com/en/strumenti/audit), where it runs in
+production.
 
 **This is not legal advice.** The output is a technical observation about one page load. It does not
 decide whether a site complies with the GDPR, the ePrivacy rules or any national law. Have a qualified
